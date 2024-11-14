@@ -25,13 +25,27 @@ type
 
   VCType: VC0..NumVCs-1;
 
-  MessageType: enum {  ReadReq,         -- request for data / exclusivity
-                       ReadAck,         -- read ack (w/ data)
-                                             
-								       WBReq,           -- writeback request (w/ data)
-								       WBAck,           -- writeback ack 
-                           
-                       RecallReq 				-- Request & invalidate a valid copy
+  MessageType: enum {  -- received by home node
+                       GetS,
+                       GetM,
+                       PutS_NotLast,
+                       PutS_Last,
+                       PutM_Data_fromOwner,
+                       PutM_Data,
+                       Data,
+                       -- received by processor
+                       Load,
+                       Store,
+                       Replacement,
+                       Fwd_GetS,
+                       Fwd_GetM,
+                       Inv,
+                       Put_Ack,
+                       Data_fromDir_Ack_EQ0,
+                       Data_fromDir_Ack_GT0,
+                       Data_fromOwner,
+                       Inv_Ack,
+                       Last_Inv_Ack
                     };
 
   Message:
@@ -45,8 +59,8 @@ type
 
   HomeState:
     Record
-      state: enum { H_Valid, H_Invalid, 					--stable states
-      							HT_Pending }; 								--transient states during recall
+      state: enum { H_S, H_M, H_I, 					--stable states
+      							H_SD }; 								--transient states during recall
       owner: Node;	
       --sharers: multiset [ProcCount] of Node;    --No need for sharers in this protocol, but this is a good way to represent them
       val: Value; 
@@ -54,8 +68,9 @@ type
 
   ProcState:
     Record
-      state: enum { P_Valid, P_Invalid,
-                  PT_Pending, PT_WritebackPending
+      state: enum { H_I, H_IS_D, H_IM_AD, H_IM_A, H_II_A
+                    H_S, H_SM_AD, H_SM_A, H_SI_A
+                    H_M, H_MI_A
                   };
       val: Value;
     End;
@@ -154,7 +169,7 @@ Begin
   msg_processed := true;
 
   switch HomeNode.state
-  case H_Invalid:
+  case H_I:
     switch msg.mtype
 
     case ReadReq:
@@ -179,7 +194,7 @@ Begin
             
     case WBReq:
     	assert (msg.src = HomeNode.owner) "Writeback from non-owner";
-      HomeNode.state := H_Invalid;
+      HomeNode.state := H_I;
       HomeNode.val := msg.val;
       Send(WBAck, msg.src, HomeType, VC1, UNDEFINED);
       undefine HomeNode.owner
@@ -371,7 +386,7 @@ startstate
 
 	For v:Value do
   -- home node initialization
-  HomeNode.state := H_Invalid;
+  HomeNode.state := H_I;
   undefine HomeNode.owner;
   HomeNode.val := v;
 	endfor;
@@ -392,12 +407,12 @@ endstartstate;
 ----------------------------------------------------------------------
 
 invariant "Invalid implies empty owner"
-  HomeNode.state = H_Invalid
+  HomeNode.state = H_I
     ->
       IsUndefined(HomeNode.owner);
 
 invariant "value in memory matches value of last write, when invalid"
-     HomeNode.state = H_Invalid 
+     HomeNode.state = H_I 
     ->
 			HomeNode.val = LastWrite;
 
@@ -424,13 +439,13 @@ invariant "modified implies empty sharers list"
       MultiSetCount(i:HomeNode.sharers, true) = 0;
 
 invariant "Invalid implies empty sharer list"
-  HomeNode.state = H_Invalid
+  HomeNode.state = H_I
     ->
       MultiSetCount(i:HomeNode.sharers, true) = 0;
 
 invariant "values in memory matches value of last write, when shared or invalid"
   Forall n : Proc Do	
-     HomeNode.state = H_Shared | HomeNode.state = H_Invalid
+     HomeNode.state = H_Shared | HomeNode.state = H_I
     ->
 			HomeNode.val = LastWrite
 	end;
