@@ -149,7 +149,7 @@ Begin
       if n != rqst
       then 
         -- Send invalidation message here 
-        Send(Inv, n, HomeType, VC_Fwd, UNDEFINED, 0, rqst); -- sharer should send inv-ack to rqst
+        Send(Inv, n, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, rqst); -- sharer should send inv-ack to rqst
       endif;
     endif;
   endfor;
@@ -177,14 +177,13 @@ Begin
     switch msg.mtype
     case GetS:
       -- send data to req
-      Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, 0, UNDEFINED);
+      Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, UNDEFINED, UNDEFINED);
       -- add req to sharers
       AddToSharersList(msg.src);
-
       HomeNode.state := H_S;
     case GetM:
       -- send data to req
-      Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, 0, UNDEFINED);
+      Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, UNDEFINED, UNDEFINED);
       -- set owner to req
       HomeNode.state := H_M;
       HomeNode.owner := msg.src;
@@ -203,7 +202,7 @@ Begin
     switch msg.mtype
     case GetS:
       -- send data to req
-      Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, 0, UNDEFINED);
+      Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, UNDEFINED, UNDEFINED);
       -- add req to sharers
       AddToSharersList(msg.src);
     case GetM:
@@ -226,12 +225,12 @@ Begin
     case PutS:
       Assert(IsSharer(msg.src)); -- TODO good?
       RemoveFromSharersList(msg.src);
-      Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
 
       if (MultiSetCount(i:HomeNode.sharers, true) = 0) then -- TODO: checks if size is 0?
         -- we have removed the last sharer, so invalidate
         HomeNode.state := H_I;
       endif;
+      Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
     case PutM:
       -- remove req from sharers
       Assert(IsSharer(msg.src)); -- TODO good? probably not?
