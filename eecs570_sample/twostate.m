@@ -7,10 +7,11 @@
 const
   ProcCount: 3;          -- number processors
   ValueCount:   2;       -- number of data values.
-  VC0: 0;                -- low priority
-  VC1: 1;
+  VC_Req: 0;
+  VC_Fwd: 1;
+  VC_Res: 2;
   QMax: 2;
-  NumVCs: VC1 - VC0 + 1;
+  NumVCs: 3;
   NetMax: ProcCount+1;
   
 
@@ -28,8 +29,7 @@ type
   MessageType: enum {  -- received by home node
                        GetS,
                        GetM,
-                       PutS_NotLast,
-                       PutS_Last,
+                       PutS,
                        PutM_Data_fromOwner,
                        PutM_Data,
                        Data,
@@ -55,22 +55,24 @@ type
       -- do not need a destination for verification; the destination is indicated by which array entry in the Net the message is placed
       vc: VCType;
       val: Value;
+      ackCount: 0..ProcCount;
+      ackDst: Node;
     End;
 
   HomeState:
     Record
       state: enum { H_S, H_M, H_I, 					--stable states
-      							H_SD }; 								--transient states during recall
+      							H_S_D }; 								--transient states during recall
       owner: Node;	
-      --sharers: multiset [ProcCount] of Node;    --No need for sharers in this protocol, but this is a good way to represent them
+      sharers: multiset [ProcCount] of Node;    --No need for sharers in this protocol, but this is a good way to represent them
       val: Value; 
     End;
 
   ProcState:
     Record
-      state: enum { H_I, H_IS_D, H_IM_AD, H_IM_A, H_II_A
-                    H_S, H_SM_AD, H_SM_A, H_SI_A
-                    H_M, H_MI_A
+      state: enum { P_I, P_IS_D, P_IM_AD, P_IM_A, P_II_A
+                    P_S, P_SM_AD, P_SM_A, P_SI_A
+                    P_M, P_MI_A
                   };
       val: Value;
     End;
@@ -94,14 +96,18 @@ Procedure Send(mtype:MessageType;
 	       src:Node;
          vc:VCType;
          val:Value;
+         ackCount:0..ProcCount; -- number of inv-acks we need to receive -- only used when sharing data to new owner
+         ackDst:Node; -- where to send an inv-ack, e.g. after receiving an inv
          );
 var msg:Message;
 Begin
   Assert (MultiSetCount(i:Net[dst], true) < NetMax) "Too many messages";
-  msg.mtype := mtype;
-  msg.src   := src;
-  msg.vc    := vc;
-  msg.val   := val;
+  msg.mtype    := mtype;
+  msg.src      := src;
+  msg.vc       := vc;
+  msg.val      := val;
+  msg.ackCount := ackCount;
+  msg.ackDst  := ackDst;
   MultiSetAdd(msg, Net[dst]);
 End;
 
@@ -115,7 +121,6 @@ Begin
   error "Unhandled state!";
 End;
 
-/*
 -- These aren't needed for Valid/Invalid protocol, but this is a good way of writing these functions
 Procedure AddToSharersList(n:Node);
 Begin
@@ -135,6 +140,11 @@ Begin
   MultiSetRemovePred(i:HomeNode.sharers, HomeNode.sharers[i] = n);
 End;
 
+Procedure RemoveAllSharers();
+Begin
+  MultiSetRemovePred(i:HomeNode.sharers, true); -- better way to do this? lol
+End;
+
 -- Sends a message to all sharers except rqst
 Procedure SendInvReqToSharers(rqst:Node);
 Begin
@@ -145,15 +155,15 @@ Begin
       if n != rqst
       then 
         -- Send invalidation message here 
+        Send(Inv, n, HomeType, VC_Fwd, UNDEFINED, 0, rqst); -- sharer should send inv-ack to rqst
       endif;
     endif;
   endfor;
 End;
-*/
 
 
 Procedure HomeReceive(msg:Message);
-var cnt:0..ProcCount;  -- for counting sharers
+var numSharers:0..ProcCount;  -- for counting sharers
 Begin
 -- Debug output may be helpful:
 --  put "Receiving "; put msg.mtype; put " on VC"; put msg.vc; 
@@ -162,7 +172,7 @@ Begin
   -- The line below is not needed in Valid/Invalid protocol.  However, the 
   -- compiler barfs if we put this inside a switch, so it is useful to
   -- pre-calculate the sharer count here
-  --cnt := MultiSetCount(i:HomeNode.sharers, true);
+  numSharers := MultiSetCount(i:HomeNode.sharers, true);
 
 
   -- default to 'processing' message.  set to false otherwise
@@ -171,51 +181,146 @@ Begin
   switch HomeNode.state
   case H_I:
     switch msg.mtype
+    case GetS:
+      -- send data to req
+      Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, 0, UNDEFINED);
+      -- add req to sharers
+      AddToSharersList(msg.src);
 
-    case ReadReq:
-      HomeNode.state := H_Valid;
+      HomeNode.state := H_S;
+    case GetM:
+      -- send data to req
+      Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, 0, UNDEFINED);
+      -- set owner to req
+      HomeNode.state := H_M;
       HomeNode.owner := msg.src;
-      Send(ReadAck, msg.src, HomeType, VC1, HomeNode.val);
-
+    case PutS:
+      -- send put_ack to req
+      Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
+    case PutM:
+      -- send put_ack to req
+      Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
     else
       ErrorUnhandledMsg(msg, HomeType);
 
     endswitch;
 
-  case H_Valid:
-    Assert (IsUndefined(HomeNode.owner) = false) 
-       "HomeNode has no owner, but line is Valid";
-
+  case H_S:
     switch msg.mtype
-    case ReadReq:
-      HomeNode.state := HT_Pending;     
-      Send(RecallReq, HomeNode.owner, HomeType, VC0, UNDEFINED);
-      HomeNode.owner := msg.src; --remember who the new owner will be
-            
-    case WBReq:
-    	assert (msg.src = HomeNode.owner) "Writeback from non-owner";
-      HomeNode.state := H_I;
-      HomeNode.val := msg.val;
-      Send(WBAck, msg.src, HomeType, VC1, UNDEFINED);
-      undefine HomeNode.owner
+    case GetS:
+      -- send data to req
+      Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, 0, UNDEFINED);
+      -- add req to sharers
+      AddToSharersList(msg.src);
+    case GetM:
+      -- send data to Req,
+      if (IsSharer(msg.src)) then
+        -- node is trying to upgrade from S to M
+        -- ackCount = numSharers - 1, since proc doesn't expect ack from itself
+        Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, numSharers - 1, UNDEFINED);
+      else
+        -- ackCount = numSharers
+        Send(Data, msg.src, HomeType, VC_Res, HomeNode.val, numSharers, UNDEFINED);
+      endif;
+      -- send Inv to  all Sharers, except requester
+      SendInvReqToSharers(msg.src);
+      -- clear Sharers
+      RemoveAllSharers();
+      -- set Owner to Req/M
+      HomeNode.owner := msg.src;
+      HomeNode.state := H_M;
+    case PutS:
+      Assert(IsSharer(msg.src)); -- TODO good?
+      RemoveFromSharersList(msg.src);
+      Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
 
+      if (MultiSetCount(i:HomeNode.sharers, true) = 0) then -- TODO: checks if size is 0?
+        -- we have removed the last sharer, so invalidate
+        HomeNode.state := H_I;
+      endif;
+    case PutM:
+      -- remove req from sharers
+      Assert(IsSharer(msg.src)); -- TODO good? probably not?
+      RemoveFromSharersList(msg.src);
+      -- send put_ack to req
+      Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
+
+      if (MultiSetCount(i:HomeNode.sharers, true) = 0) then -- TODO: checks if size is 0?
+        -- we have removed the last sharer, so invalidate
+        HomeNode.state := H_I;
+      endif;
     else
       ErrorUnhandledMsg(msg, HomeType);
 
     endswitch;
-
-  case HT_Pending:
+  case H_M:
     switch msg.mtype
-   
-    case WBReq:
-      Assert (!IsUnDefined(HomeNode.owner)) "owner undefined";
-      HomeNode.state := H_Valid;
+    case GetS:
+      -- send fwd_getS to owner
+      Send(Fwd_GetS, HomeNode.owner, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
+      -- add req and owner to sharers
+      AddToSharersList(HomeNode.owner);
+      AddToSharersList(msg.src);
+      -- clear owner
+      undefine HomeNode.owner;
+      -- state goes to H_S_D
+      HomeNode.state := H_S_D;
+    case GetM:
+      -- send fwd_getm to owner
+      Send(Fwd_GetM, HomeNode.owner, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
+      -- set owner to req
+      HomeNode.owner := msg.src;
+    case PutS:
+      -- send put_ack to req
+      Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
+    case PutM:
+      if (msg.src = HomeNode.owner) then
+        -- src is owner
+        -- copy data to memory
+        HomeNode.val := msg.val;
+        -- clear owner
+        undefine HomeNode.owner;
+        -- send put_ack to req
+        Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
+        HomeNode.state := H_I;
+      else
+        -- src is non-owner
+        -- send put_ack to req
+        Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
+      endif;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+
+    endswitch;
+  case H_S_D:
+    switch msg.mtype
+    case GetS:
+      -- stall
+      msg_processed := false;
+    case GetM:
+      -- stall
+      msg_processed := false;
+    case PutS:
+      Assert(IsSharer(msg.src)); -- TODO good?
+      -- remove req from sharers
+      RemoveFromSharersList(msg.src);
+      -- send put_ack to req
+      Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
+    case PutM:
+      -- remove req from sharers
+      Assert(IsSharer(msg.src)); -- TODO good? probably not?
+      RemoveFromSharersList(msg.src);
+      -- send put_ack to req
+      Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
+
+      if (MultiSetCount(i:HomeNode.sharers, true) = 0) then -- TODO: checks if size is 0?
+        -- we have removed the last sharer, so invalidate
+        HomeNode.state := H_I;
+      endif;
+    case Data:
+      -- copy data to memory
       HomeNode.val := msg.val;
-      Send(ReadAck, HomeNode.owner, HomeType, VC1, HomeNode.val);
-
-    case ReadReq:
-    	msg_processed := false; -- stall message in InBox
-
+      HomeNode.state := H_S;
     else
       ErrorUnhandledMsg(msg, HomeType);
 
