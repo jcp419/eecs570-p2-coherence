@@ -30,22 +30,15 @@ type
                        GetS,
                        GetM,
                        PutS,
-                       PutM_Data_fromOwner,
-                       PutM_Data,
-                       Data,
+                       PutM,
                        -- received by processor
-                       Load,
-                       Store,
-                       Replacement,
                        Fwd_GetS,
                        Fwd_GetM,
                        Inv,
                        Put_Ack,
-                       Data_fromDir_Ack_EQ0,
-                       Data_fromDir_Ack_GT0,
-                       Data_fromOwner,
                        Inv_Ack,
-                       Last_Inv_Ack
+                       -- received by both
+                       Data
                     };
 
   Message:
@@ -56,7 +49,7 @@ type
       vc: VCType;
       val: Value;
       ackCount: 0..ProcCount;
-      ackDst: Node;
+      fwdDst: Node;
     End;
 
   HomeState:
@@ -75,6 +68,7 @@ type
                     P_M, P_MI_A
                   };
       val: Value;
+      ackCount: 0..ProcCount;
     End;
 
 ----------------------------------------------------------------------
@@ -97,7 +91,7 @@ Procedure Send(mtype:MessageType;
          vc:VCType;
          val:Value;
          ackCount:0..ProcCount; -- number of inv-acks we need to receive -- only used when sharing data to new owner
-         ackDst:Node; -- where to send an inv-ack, e.g. after receiving an inv
+         fwdDst:Node; -- where to send a response when dealing with forwarding, acks
          );
 var msg:Message;
 Begin
@@ -107,7 +101,7 @@ Begin
   msg.vc       := vc;
   msg.val      := val;
   msg.ackCount := ackCount;
-  msg.ackDst  := ackDst;
+  msg.fwdDst  := fwdDst;
   MultiSetAdd(msg, Net[dst]);
 End;
 
@@ -339,45 +333,154 @@ Begin
 
   alias ps:Procs[p].state do
   alias pv:Procs[p].val do
+  alias pAckCount:Procs[p].ackCount do
 
   switch ps
-  case P_Valid:
-
+  -- case P_I: NO MESSAGES POSSIBLE 
+  case P_IS_D:
     switch msg.mtype
-    case RecallReq:
-      Send(WBReq, msg.src, p, VC1, pv);
-      Undefine pv;
-      ps := P_Invalid;
+    case Inv:
+      -- stall
+      msg_processed := false;
+    case Data:
+      Assert(msg.src = HomeNode.owner | pAckCount = 0); -- TODO ?
+      pv = msg.val;
     else
-      ErrorUnhandledMsg(msg, p);
+      ErrorUnhandledMsg(msg, HomeType);
     endswitch;
-
-  case PT_Pending:
-
+  case P_IM_AD: 
     switch msg.mtype
-    case ReadAck:
+    case Fwd_GetS:
+      msg_processed := false;
+    case Fwd_GetM:
+      msg_processed := false;
+    case Data:
       pv := msg.val;
-      ps := P_Valid;
-    case RecallReq:
-    	msg_processed := false; -- stall message in InBox
+      if (msg.src = HomeNode.owner) then
+        ps := P_M;
+      elsif (pAckCount = 0) then
+        ps := P_M;
+      else
+        ps := P_IM_A;
+      endif;
+    case Inv_Ack:
+      pAckCount := pAckCount - 1;
     else
-      ErrorUnhandledMsg(msg, p);
+      ErrorUnhandledMsg(msg, HomeType);
     endswitch;
-
-
-  case PT_WritebackPending:    
-
+  case P_IM_A: 
     switch msg.mtype
-    case WBAck:
-      ps := P_Invalid;
-      undefine pv;
-    case RecallReq:				-- treat a recall request as a Writeback acknowledgement
-      ps := P_Invalid;
-      undefine pv;
+    case Fwd_GetS:
+      msg_processed := false;
+    case Fwd_GetM:
+      msg_processed := false;
+    case Inv_Ack:
+      if (pAckCount = 0) then
+        ps := P_M;
+      else
+        pAckCount := pAckCount - 1;
+      endif;
     else
-      ErrorUnhandledMsg(msg, p);
-		endswitch;
-
+      ErrorUnhandledMsg(msg, HomeType);
+    endif; 
+  case P_II_A: 
+    switch msg.mtype
+    case Put_Ack:
+      ps := P_I;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+    endif; 
+  case P_S: 
+    switch msg.mtype
+    case Inv:
+      -- send inv_ack to req
+      Send(Inv_Ack, msg.fwdDst, p, VC_Res, UNDEFINED, UNDEFINED, UNDEFINED);
+      undefine pv;
+      ps := P_I;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+    endswitch;
+  case P_SM_AD: 
+    switch msg.mtype
+    case Fwd_GetS:
+      msg_processed := false;
+    case Fwd_GetM:
+      msg_processed := false;
+    case Inv:
+      Send(Inv_Ack, msg.fwdDst, p, VC_Res, UNDEFINED, UNDEFINED, UNDEFINED);
+      ps := P_IM_AD;
+    case Data:
+      pv := msg.val;
+      if (msg.src = HomeNode.owner) then
+        ps := P_M;
+      elsif (pAckCount = 0) then
+        ps := P_M;
+      else
+        ps := P_SM_A;
+      endif;
+    case Inv_Ack:
+      pAckCount := pAckCount - 1;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+    endswitch;
+  case P_SM_A: 
+    switch msg.mtype
+    case Fwd_GetS:
+      msg_processed := false;
+    case Fwd_GetM:
+      msg_processed := false; 
+    case Inv_Ack:
+      if (pAckCount = 0) then
+        ps := P_M;
+      else
+        pAckCount := pAckCount - 1;
+      endif;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+    endswitch;
+  case P_SI_A:  
+    switch msg.mtype
+    case Inv:
+      -- send inv_ack to req
+      Send(Inv_Ack, msg.fwdDst, p, VC_Res, UNDEFINED, UNDEFINED, UNDEFINED);
+      ps := P_II_A
+    case Put_Ack:
+      ps := P_I;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+    endif;
+  case P_M: 
+    switch msg.mtype
+    case Fwd_GetS:
+      -- send data to req
+      Send(Data, msg.fwdDst, p, VC_Res, UNDEFINED, UNDEFINED, UNDEFINED);
+      -- send data to dir
+      Send(Data, HomeType, p, VC_Res, UNDEFINED, UNDEFINED, UNDEFINED);
+      ps := P_S;
+    case Fwd_GetM:
+      -- send data to req
+      Send(Data, msg.fwdDst, p, VC_Res, UNDEFINED, UNDEFINED, UNDEFINED);
+      ps := P_I;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+    endswitch;
+  case P_MI_A:
+    switch msg.mtype
+    case Fwd_GetS:
+      -- send data to req
+      Send(Data, msg.fwdDst, p, VC_Res, UNDEFINED, UNDEFINED, UNDEFINED);
+      -- send data to dir
+      Send(Data, HomeType, p, VC_Res, UNDEFINED, UNDEFINED, UNDEFINED);
+      ps := P_SI_A;
+    case Fwd_GetM:
+      -- send data to req
+      Send(Data, msg.fwdDst, p, VC_Res, UNDEFINED, UNDEFINED, UNDEFINED);
+      ps := P_II_A;
+    case Put_Ack:
+      ps := P_I;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+    endswitch;
   ----------------------------
   -- Error catch
   ----------------------------
@@ -535,7 +638,7 @@ invariant "value is undefined while invalid"
 			IsUndefined(Procs[n].val)
 	end;
 	
-/*	
+	
 -- Here are some invariants that are helpful for validating shared state.
 
 invariant "modified implies empty sharers list"
@@ -561,4 +664,3 @@ invariant "values in shared state match memory"
     ->
 			HomeNode.val = Procs[n].val
 	end;
-*/	
