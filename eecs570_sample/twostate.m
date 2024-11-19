@@ -491,6 +491,7 @@ Begin
   
   endalias;
   endalias;
+  endalias;
 End;
 
 ----------------------------------------------------------------------
@@ -503,27 +504,58 @@ ruleset n:Proc Do
   alias p:Procs[n] Do
 
 	ruleset v:Value Do
-  	rule "store new value"
-   	 (p.state = P_Valid)
+  	rule "store in invalid (goes to modified)"
+   	 (p.state = P_I)
     	==>
- 		   p.val := v;      
+       Send(GetM, HomeType, n, VC_Req, UNDEFINED, UNDEFINED, UNDEFINED);
+       p.state := P_IM_AD;
+ 		   p.val := v;
  		   LastWrite := v;  --We use LastWrite to sanity check that reads receive the value of the last write
   	endrule;
 	endruleset;
 
-  rule "read request"
-    p.state = P_Invalid 
+  ruleset v:Value Do
+  	rule "store in shared (goes to modified)"
+   	 (p.state = P_S)
+    	==>
+       Send(GetM, HomeType, n, VC_Req, UNDEFINED, UNDEFINED, UNDEFINED);
+       p.state := P_SM_AD;
+ 		   p.val := v;
+ 		   LastWrite := v;  --We use LastWrite to sanity check that reads receive the value of the last write
+  	endrule;
+	endruleset;
+
+  ruleset v:Value Do
+  	rule "store in modified (stays modified)"
+   	 (p.state = P_M)
+    	==>
+ 		   p.val := v;
+ 		   LastWrite := v;  --We use LastWrite to sanity check that reads receive the value of the last write
+  	endrule;
+	endruleset;
+
+  rule "load from invalid (goes to shared)"
+    p.state = P_I 
   ==>
-    Send(ReadReq, HomeType, n, VC0, UNDEFINED);
-    p.state := PT_Pending;
+    Send(GetS, HomeType, n, VC_Req, UNDEFINED, UNDEFINED, UNDEFINED);
+    p.state := P_IS_D;
   endrule;
 
+  -- other load events do not affect coherence
 
-  rule "writeback"
-    (p.state = P_Valid)
+  rule "replacement from shared (goes to invalid)"
+    (p.state = P_S)
   ==>
-    Send(WBReq, HomeType, n, VC1, p.val); 
-    p.state := PT_WritebackPending;
+    Send(PutS, HomeType, n, VC_Req, UNDEFINED, UNDEFINED, UNDEFINED);
+    p.state := P_SI_A;
+    undefine p.val;
+  endrule;
+
+  rule "replacement from modified (goes to invalid)"
+    (p.state = P_M)
+  ==>
+    Send(PutM, HomeType, n, VC_Req, p.val, UNDEFINED, UNDEFINED); 
+    p.state := P_MI_A;
     undefine p.val;
   endrule;
 
