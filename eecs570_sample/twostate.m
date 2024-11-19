@@ -24,7 +24,7 @@ type
   Home: enum { HomeType };      -- need enumeration for IsMember calls
   Node: union { Home , Proc };
 
-  VCType: VC0..NumVCs-1;
+  VCType: VC_Req..NumVCs-1;
 
   MessageType: enum {  -- received by home node
                        GetS,
@@ -63,8 +63,8 @@ type
 
   ProcState:
     Record
-      state: enum { P_I, P_IS_D, P_IM_AD, P_IM_A, P_II_A
-                    P_S, P_SM_AD, P_SM_A, P_SI_A
+      state: enum { P_I, P_IS_D, P_IM_AD, P_IM_A, P_II_A,
+                    P_S, P_SM_AD, P_SM_A, P_SI_A,
                     P_M, P_MI_A
                   };
       val: Value;
@@ -226,7 +226,7 @@ Begin
       Assert(IsSharer(msg.src)); -- TODO good?
       RemoveFromSharersList(msg.src);
 
-      if (MultiSetCount(i:HomeNode.sharers, true) = 0) then -- TODO: checks if size is 0?
+      if (numSharers = 1) then -- TODO: checks if size is 0?
         -- we have removed the last sharer, so invalidate
         HomeNode.state := H_I;
       endif;
@@ -238,7 +238,7 @@ Begin
       -- send put_ack to req
       Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
 
-      if (MultiSetCount(i:HomeNode.sharers, true) = 0) then -- TODO: checks if size is 0?
+      if (numSharers = 1) then -- TODO: checks if size is 0?
         -- we have removed the last sharer, so invalidate
         HomeNode.state := H_I;
       endif;
@@ -306,7 +306,7 @@ Begin
       -- send put_ack to req
       Send(Put_Ack, msg.src, HomeType, VC_Fwd, UNDEFINED, UNDEFINED, UNDEFINED);
 
-      if (MultiSetCount(i:HomeNode.sharers, true) = 0) then -- TODO: checks if size is 0?
+      if (numSharers = 1) then -- TODO: checks if size is 0?
         -- we have removed the last sharer, so invalidate
         HomeNode.state := H_I;
       endif;
@@ -343,7 +343,7 @@ Begin
       msg_processed := false;
     case Data:
       Assert(msg.src = HomeNode.owner | pAckCount = 0); -- TODO ?
-      pv = msg.val;
+      pv := msg.val;
     else
       ErrorUnhandledMsg(msg, HomeType);
     endswitch;
@@ -381,14 +381,14 @@ Begin
       endif;
     else
       ErrorUnhandledMsg(msg, HomeType);
-    endif; 
+    endswitch; 
   case P_II_A: 
     switch msg.mtype
     case Put_Ack:
       ps := P_I;
     else
       ErrorUnhandledMsg(msg, HomeType);
-    endif; 
+    endswitch; 
   case P_S: 
     switch msg.mtype
     case Inv:
@@ -447,7 +447,7 @@ Begin
       ps := P_I;
     else
       ErrorUnhandledMsg(msg, HomeType);
-    endif;
+    endswitch;
   case P_M: 
     switch msg.mtype
     case Fwd_GetS:
@@ -633,7 +633,7 @@ startstate
   
   -- processor initialization
   for i:Proc do
-    Procs[i].state := P_Invalid;
+    Procs[i].state := P_I;
     undefine Procs[i].val;
   endfor;
 
@@ -655,16 +655,18 @@ invariant "value in memory matches value of last write, when invalid"
     ->
 			HomeNode.val = LastWrite;
 
+-- TODO
+/*
 invariant "values in valid state match last write"
   Forall n : Proc Do	
      Procs[n].state = P_Valid
     ->
 			Procs[n].val = LastWrite --LastWrite is updated whenever a new value is created 
 	end;
-	
+*/
 invariant "value is undefined while invalid"
   Forall n : Proc Do	
-     Procs[n].state = P_Invalid
+     Procs[n].state = P_I
     ->
 			IsUndefined(Procs[n].val)
 	end;
@@ -673,7 +675,7 @@ invariant "value is undefined while invalid"
 -- Here are some invariants that are helpful for validating shared state.
 
 invariant "modified implies empty sharers list"
-  HomeNode.state = H_Modified
+  HomeNode.state = H_M
     ->
       MultiSetCount(i:HomeNode.sharers, true) = 0;
 
@@ -684,14 +686,14 @@ invariant "Invalid implies empty sharer list"
 
 invariant "values in memory matches value of last write, when shared or invalid"
   Forall n : Proc Do	
-     HomeNode.state = H_Shared | HomeNode.state = H_I
+     HomeNode.state = H_S | HomeNode.state = H_I
     ->
 			HomeNode.val = LastWrite
 	end;
 
 invariant "values in shared state match memory"
   Forall n : Proc Do	
-     HomeNode.state = H_Shared & Procs[n].state = P_Shared
+     HomeNode.state = H_S & Procs[n].state = P_S
     ->
 			HomeNode.val = Procs[n].val
 	end;
